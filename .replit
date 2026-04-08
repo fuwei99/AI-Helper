@@ -18,3 +18,20 @@ expertMode = true
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 8081
+externalPort = 80
+
+[[ports]]
+localPort = 24927
+externalPort = 3000
+
+[userenv]
+
+[userenv.shared]
+PROXY_API_KEY = "sk-proxy-5c455d9f302e85372ec9523425168ed83a0acb04"
