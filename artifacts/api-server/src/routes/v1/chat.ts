@@ -1,7 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { GoogleGenAI } from "@google/genai";
 import { authMiddleware } from "../../middlewares/auth";
 import { isModelEnabled } from "../../lib/modelGroups";
 
@@ -63,10 +62,8 @@ const anthropic = new Anthropic({
   baseURL: process.env["AI_INTEGRATIONS_ANTHROPIC_BASE_URL"],
 });
 
-const gemini = new GoogleGenAI({
-  apiKey: process.env["AI_INTEGRATIONS_GEMINI_API_KEY"] ?? "dummy",
-  httpOptions: { baseUrl: process.env["AI_INTEGRATIONS_GEMINI_BASE_URL"] },
-});
+const GEMINI_BASE_URL = process.env["AI_INTEGRATIONS_GEMINI_BASE_URL"] ?? "";
+const GEMINI_API_KEY  = process.env["AI_INTEGRATIONS_GEMINI_API_KEY"]  ?? "dummy";
 
 const openrouter = new OpenAI({
   apiKey: process.env["AI_INTEGRATIONS_OPENROUTER_API_KEY"] ?? "dummy",
@@ -700,6 +697,39 @@ async function handleClaudeNonStream(
 }
 
 // ----------------------------------------------------------------------
+// Gemini helpers — native fetch (no SDK to avoid /v1beta/ prefix injection)
+// ----------------------------------------------------------------------
+
+function buildGeminiRequestBody(
+  contents: GeminiContent[],
+  systemInstruction: string | undefined,
+  max_tokens: number | undefined,
+  temperature: number | undefined,
+  top_p: number | undefined,
+  thinkingEnabled: boolean,
+): Record<string, unknown> {
+  const generationConfig: Record<string, unknown> = {
+    maxOutputTokens: max_tokens ?? 8192,
+  };
+  if (temperature !== undefined) generationConfig["temperature"] = temperature;
+  if (top_p !== undefined) generationConfig["topP"] = top_p;
+  if (thinkingEnabled) generationConfig["thinkingConfig"] = { thinkingBudget: -1 };
+
+  const body: Record<string, unknown> = { contents, generationConfig };
+  if (systemInstruction) {
+    body["systemInstruction"] = { parts: [{ text: systemInstruction }] };
+  }
+  return body;
+}
+
+function geminiHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "x-goog-api-key": GEMINI_API_KEY,
+  };
+}
+
+// ----------------------------------------------------------------------
 // Gemini - streaming
 // ----------------------------------------------------------------------
 
@@ -716,39 +746,66 @@ async function handleGeminiStream(
   res.write(": init\n\n");
 
   const id = `chatcmpl-${Date.now()}`;
-
   const keepaliveInterval = setInterval(() => {
     res.write(": keepalive\n\n");
   }, 5000);
 
   try {
-    const config: Record<string, unknown> = {
-      maxOutputTokens: max_tokens ?? 8192,
-    };
-    if (temperature !== undefined) config["temperature"] = temperature;
-    if (top_p !== undefined) config["topP"] = top_p;
-    if (systemInstruction) config["systemInstruction"] = systemInstruction;
-    if (thinkingEnabled) config["thinkingConfig"] = { thinkingBudget: -1 };
+    const url = `${GEMINI_BASE_URL}/models/${baseModel}:streamGenerateContent?alt=sse`;
+    const reqBody = buildGeminiRequestBody(contents, systemInstruction, max_tokens, temperature, top_p, thinkingEnabled);
+
+    const upstream = await fetch(url, {
+      method: "POST",
+      headers: geminiHeaders(),
+      body: JSON.stringify(reqBody),
+    });
+
+    if (!upstream.ok || !upstream.body) {
+      const errText = await upstream.text().catch(() => "");
+      throw new Error(`Gemini upstream error ${upstream.status}: ${errText}`);
+    }
 
     sseWrite(res, makeChunk(id, model, { role: "assistant", content: "" }));
 
-    const stream = await gemini.models.generateContentStream({
-      model: baseModel,
-      contents,
-      config: config as Parameters<typeof gemini.models.generateContentStream>[0]["config"],
-    });
-
     let inputTokens = 0;
     let outputTokens = 0;
+    let buf = "";
 
-    for await (const chunk of stream) {
-      const text = chunk.text;
-      if (text) {
-        sseWrite(res, makeChunk(id, model, { content: text }));
-      }
-      if (chunk.usageMetadata) {
-        inputTokens = chunk.usageMetadata.promptTokenCount ?? inputTokens;
-        outputTokens = chunk.usageMetadata.candidatesTokenCount ?? outputTokens;
+    const reader = upstream.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const jsonStr = line.slice(6).trim();
+        if (!jsonStr || jsonStr === "[DONE]") continue;
+        let parsed: Record<string, unknown>;
+        try { parsed = JSON.parse(jsonStr); } catch { continue; }
+
+        // Extract text from candidates
+        const candidates = parsed["candidates"] as Array<{
+          content?: { parts?: Array<{ text?: string }> };
+          finishReason?: string;
+        }> | undefined;
+        const text = candidates?.[0]?.content?.parts?.map(p => p.text ?? "").join("") ?? "";
+        if (text) sseWrite(res, makeChunk(id, model, { content: text }));
+
+        // Capture usage
+        const usage = parsed["usageMetadata"] as {
+          promptTokenCount?: number;
+          candidatesTokenCount?: number;
+        } | undefined;
+        if (usage) {
+          inputTokens = usage.promptTokenCount ?? inputTokens;
+          outputTokens = usage.candidatesTokenCount ?? outputTokens;
+        }
       }
     }
 
@@ -789,23 +846,28 @@ async function handleGeminiNonStream(
   const { baseModel, thinkingEnabled } = stripGeminiSuffix(model);
   const { systemInstruction, contents } = convertMessagesToGemini(body.messages);
 
-  const config: Record<string, unknown> = {
-    maxOutputTokens: max_tokens ?? 8192,
-  };
-  if (temperature !== undefined) config["temperature"] = temperature;
-  if (top_p !== undefined) config["topP"] = top_p;
-  if (systemInstruction) config["systemInstruction"] = systemInstruction;
-  if (thinkingEnabled) config["thinkingConfig"] = { thinkingBudget: -1 };
+  const url = `${GEMINI_BASE_URL}/models/${baseModel}:generateContent`;
+  const reqBody = buildGeminiRequestBody(contents, systemInstruction, max_tokens, temperature, top_p, thinkingEnabled);
 
-  const response = await gemini.models.generateContent({
-    model: baseModel,
-    contents,
-    config: config as Parameters<typeof gemini.models.generateContent>[0]["config"],
+  const upstream = await fetch(url, {
+    method: "POST",
+    headers: geminiHeaders(),
+    body: JSON.stringify(reqBody),
   });
 
-  const text = response.text ?? "";
-  const inputTokens = response.usageMetadata?.promptTokenCount ?? 0;
-  const outputTokens = response.usageMetadata?.candidatesTokenCount ?? 0;
+  if (!upstream.ok) {
+    const errText = await upstream.text().catch(() => "");
+    throw new Error(`Gemini upstream error ${upstream.status}: ${errText}`);
+  }
+
+  const data = await upstream.json() as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  };
+
+  const text = data.candidates?.[0]?.content?.parts?.map(p => p.text ?? "").join("") ?? "";
+  const inputTokens  = data.usageMetadata?.promptTokenCount    ?? 0;
+  const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
   const id = `chatcmpl-${Date.now()}`;
 
   res.json({
