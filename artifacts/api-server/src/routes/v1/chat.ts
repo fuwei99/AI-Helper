@@ -713,7 +713,7 @@ function buildGeminiRequestBody(
   };
   if (temperature !== undefined) generationConfig["temperature"] = temperature;
   if (top_p !== undefined) generationConfig["topP"] = top_p;
-  if (thinkingEnabled) generationConfig["thinkingConfig"] = { thinkingBudget: -1 };
+  if (thinkingEnabled) generationConfig["thinkingConfig"] = { thinkingBudget: 16384, includeThoughts: true };
 
   const body: Record<string, unknown> = { contents, generationConfig };
   if (systemInstruction) {
@@ -789,13 +789,20 @@ async function handleGeminiStream(
         let parsed: Record<string, unknown>;
         try { parsed = JSON.parse(jsonStr); } catch { continue; }
 
-        // Extract text from candidates
+        // Extract text from candidates — handle thought parts separately
         const candidates = parsed["candidates"] as Array<{
-          content?: { parts?: Array<{ text?: string }> };
+          content?: { parts?: Array<{ text?: string; thought?: boolean }> };
           finishReason?: string;
         }> | undefined;
-        const text = candidates?.[0]?.content?.parts?.map(p => p.text ?? "").join("") ?? "";
-        if (text) sseWrite(res, makeChunk(id, model, { content: text }));
+        for (const part of candidates?.[0]?.content?.parts ?? []) {
+          const text = part.text ?? "";
+          if (!text) continue;
+          if (part.thought) {
+            sseWrite(res, makeChunk(id, model, { reasoning_content: text }));
+          } else {
+            sseWrite(res, makeChunk(id, model, { content: text }));
+          }
+        }
 
         // Capture usage
         const usage = parsed["usageMetadata"] as {
@@ -861,14 +868,21 @@ async function handleGeminiNonStream(
   }
 
   const data = await upstream.json() as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> }; finishReason?: string }>;
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   };
 
-  const text = data.candidates?.[0]?.content?.parts?.map(p => p.text ?? "").join("") ?? "";
+  // Separate thought parts from text parts
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  const reasoningContent = parts.filter(p => p.thought).map(p => p.text ?? "").join("");
+  const textContent      = parts.filter(p => !p.thought).map(p => p.text ?? "").join("");
+
   const inputTokens  = data.usageMetadata?.promptTokenCount    ?? 0;
   const outputTokens = data.usageMetadata?.candidatesTokenCount ?? 0;
   const id = `chatcmpl-${Date.now()}`;
+
+  const message: Record<string, unknown> = { role: "assistant", content: textContent };
+  if (reasoningContent) message["reasoning_content"] = reasoningContent;
 
   res.json({
     id,
@@ -877,7 +891,7 @@ async function handleGeminiNonStream(
     model,
     choices: [{
       index: 0,
-      message: { role: "assistant", content: text },
+      message,
       finish_reason: "stop",
     }],
     usage: {
