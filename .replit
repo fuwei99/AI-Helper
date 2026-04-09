@@ -34,4 +34,4 @@ externalPort = 3000
 [userenv]
 
 [userenv.shared]
-PROXY_API_KEY = "sk-proxy-5c455d9f302e85372ec9523425168ed83a0acb04"
+PROXY_API_KEY = "sk-proxy-5a6d3afb08f5b52891f6becf3d40b66b87e56921"
