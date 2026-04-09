@@ -498,13 +498,7 @@ async function handleClaudeStream(
 
         if (block.type === "thinking") {
           inThinking = true;
-          if (thinkingVisible) {
-            sseWrite(res, makeChunk(id, model, { content: "<thinking>\n" }));
-          }
         } else if (block.type === "text") {
-          if (inThinking && thinkingVisible) {
-            sseWrite(res, makeChunk(id, model, { content: "\n</thinking>\n\n" }));
-          }
           inThinking = false;
         } else if (block.type === "tool_use") {
           // Assign a sequential OAI tool call index (0-based) independent of content block index
@@ -527,7 +521,7 @@ async function handleClaudeStream(
 
         if (delta.type === "thinking_delta") {
           if (thinkingVisible) {
-            sseWrite(res, makeChunk(id, model, { content: delta.thinking }));
+            sseWrite(res, makeChunk(id, model, { reasoning_content: delta.thinking }));
           }
         } else if (delta.type === "text_delta") {
           sseWrite(res, makeChunk(id, model, { content: delta.text }));
@@ -654,18 +648,16 @@ async function handleClaudeNonStream(
     : stopReason === "end_turn" ? "stop"
     : (stopReason ?? "stop");
 
-  // Compose message
-  let fullContent: string | null = bodyText || null;
-  if (thinkingText && thinkingVisible) {
-    fullContent = `<thinking>${thinkingText}</thinking>\n\n${bodyText}`;
-  }
-
   const id = `chatcmpl-${Date.now()}`;
 
   const assistantMessage: Record<string, unknown> = {
     role: "assistant",
-    content: fullContent,
+    content: bodyText || null,
   };
+
+  if (thinkingText && thinkingVisible) {
+    assistantMessage["reasoning_content"] = thinkingText;
+  }
 
   if (toolCallResults.length > 0) {
     assistantMessage["tool_calls"] = toolCallResults.map((tc) => ({
