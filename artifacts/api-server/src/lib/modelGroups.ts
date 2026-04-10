@@ -46,6 +46,7 @@ const OPENROUTER_MODELS = [
   "deepseek/deepseek-v3.2", "deepseek/deepseek-r1", "deepseek/deepseek-r1-0528",
   "mistralai/mistral-small-2603", "qwen/qwen3.5-122b-a10b",
   "google/gemini-2.5-pro", "anthropic/claude-opus-4.6",
+  "anthropic/claude-opus-4.6-fast", "z-ai/glm-5.1", "qwen/qwen3.6-plus",
 ];
 
 export const DEFAULT_GROUPS: ModelGroup[] = [
