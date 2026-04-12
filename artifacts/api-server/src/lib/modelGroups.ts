@@ -47,6 +47,7 @@ const OPENROUTER_MODELS = [
   "mistralai/mistral-small-2603", "qwen/qwen3.5-122b-a10b",
   "google/gemini-2.5-pro", "anthropic/claude-opus-4.6",
   "anthropic/claude-opus-4.6-fast", "z-ai/glm-5.1", "qwen/qwen3.6-plus",
+  "openai/gpt-5.4", "openai/gpt-5.4-pro", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
 ];
 
 export const DEFAULT_GROUPS: ModelGroup[] = [
