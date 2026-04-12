@@ -48,6 +48,8 @@ const OPENROUTER_MODELS = [
   "google/gemini-2.5-pro", "anthropic/claude-opus-4.6",
   "anthropic/claude-opus-4.6-fast", "z-ai/glm-5.1", "qwen/qwen3.6-plus",
   "openai/gpt-5.4", "openai/gpt-5.4-pro", "openai/gpt-5.4-mini", "openai/gpt-5.4-nano",
+  "openai/gpt-5-image", "openai/gpt-5-image-mini",
+  "google/gemini-3.1-flash-image-preview", "google/gemini-3-pro-image-preview", "google/gemini-2.5-flash-image",
 ];
 
 export const DEFAULT_GROUPS: ModelGroup[] = [
